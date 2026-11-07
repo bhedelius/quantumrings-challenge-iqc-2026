@@ -1,0 +1,10 @@
+
+# Decompressed circuits (the harness reads .qasm.zst directly)
+raw-circuits/
+holdout-circuits/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

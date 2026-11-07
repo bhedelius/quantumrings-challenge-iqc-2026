@@ -1,8 +1,13 @@
-# Harness itself needs only the Python standard library.
-# 'zstandard' lets the harness read .qasm.zst without the zstd CLI installed.
+# Harness reads .qasm.zst without the zstd CLI.
 zstandard>=0.22
 
-# --- Add whatever YOUR model needs below (examples) ---
-# numpy
-# scikit-learn
-# joblib
+# --- Tensor Clock model ---
+numpy
+scipy
+scikit-learn
+
+# Expected model. TabPFN downloads its own weights on first use via a one-time
+# TABPFN_TOKEN (https://github.com/PriorLabs/tabpfn) -- we do not redistribute
+# them. If tabpfn or its weights are unavailable, the harness falls back to the
+# self-contained MLP automatically.
+tabpfn

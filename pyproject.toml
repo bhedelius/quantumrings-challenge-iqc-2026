@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tensor-clock"
+version = "1.0.0"
+description = "Predicting tensor-network simulation runtime from circuit structure (Intermountain Quantum Hackathon)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Bryce Hedelius", email = "bhedelius@gmail.com"},
+    {name = "Lucas Patten"},
+    {name = "Nathan Galley"},
+    {name = "Adam Armstrong"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-learn",
+]
+
+# TabPFN is the expected model but pulls in torch and needs a TABPFN_TOKEN for its
+# weights (not redistributed here); install it explicitly. Without it the harness
+# falls back to the self-contained MLP.
+[project.optional-dependencies]
+tabpfn = ["tabpfn"]
+
+[tool.setuptools]
+packages = ["tensor_clock"]

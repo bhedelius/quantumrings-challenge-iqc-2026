@@ -1,62 +1,76 @@
 """
-model.py  --  THIS IS THE ONLY FILE YOUR TEAM NEEDS TO EDIT.
+model.py  --  Tensor Clock submission model.
 
-Implement the two methods below. The harness (run.py) takes care of finding
-circuits, decompressing them, timing you, and writing the submission file.
+The harness (run.py) calls:
+  RuntimeModel()                      fit the model from the committed feature cache
+  .featurize(qasm_text)   -> dict     parse one circuit into 32 features
+  .predict(features, thr) -> seconds  predicted wall-clock runtime
 
-Contract
---------
-  RuntimeModel()                      load your trained model / weights
-  .featurize(qasm_text)   -> dict     parse one circuit into features  (once per circuit)
-  .predict(features, thr) -> seconds  predict runtime in seconds       (once per (circuit, threshold))
-
-Rules of the challenge (see README):
-  * featurize and predict must each run in <= 15 s per circuit.
-  * predict returns a single number: the wall-clock seconds you expect the run to take.
-  * There is no separate "timeout" flag. If you think a run will hit the 6-hour cap,
-    just predict a duration >= the cap (21600 s). Scoring caps it there for you.
-
-The version below is a trivial BASELINE so the harness runs out of the box.
-Replace its guts with your real feature parser and model.
+featurize and predict share tensor_clock's parser and training pipeline, so
+inference matches training exactly. Models are fit at construction from the
+committed feature cache -- no weight files are shipped. TabPFN is the expected
+model; it downloads its own weights via the tabpfn package + a TABPFN_TOKEN (we do
+not redistribute them), and the harness falls back to the self-contained MLP when
+TabPFN is unavailable. The model predicts log10(duration); we invert and cap at
+the 6-hour timeout.
 """
 
-import re
+import math
+import sys
+from pathlib import Path
 
-CAP_SECONDS = 6 * 60 * 60  # 6-hour timeout cap
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # import tensor_clock
+
+from tensor_clock.qasm_text import FEATURE_NAMES, text_features  # noqa: E402
+
+CAP_SECONDS = 21600.0  # 6-hour timeout cap
 
 
 class RuntimeModel:
-    def __init__(self, artifacts_dir="artifacts"):
-        # Load your trained model here, e.g.:
-        #   import joblib
-        #   self.model = joblib.load(f"{artifacts_dir}/model.pkl")
-        self.model = None
+    """Runtime predictor fit at construction from the committed feature cache.
 
-    # ------------------------------------------------------------------ #
-    # 1) FEATURE PARSER  --  .qasm text  ->  feature dict                 #
-    # ------------------------------------------------------------------ #
-    def featurize(self, qasm_text: str) -> dict:
-        # BASELINE: a few cheap structural features. Design your own.
-        n_qubits = 0
-        for m in re.finditer(r"q(?:u)?(?:reg|bit)\s+\w+\s*\[\s*(\d+)\s*\]", qasm_text):
-            n_qubits += int(m.group(1))
+    Prefers TabPFN and falls back to the self-contained MLP if TabPFN (package or
+    weights) is unavailable. All fitting happens in ``__init__``, which the harness
+    calls once outside the per-circuit time budget.
+    """
 
-        lines = [l.strip() for l in qasm_text.splitlines()]
-        gate_lines = [l for l in lines if l and not l.startswith(("//", "OPENQASM",
-                     "include", "qreg", "creg", "qubit", "bit", "gate"))]
-        n_ops = len(gate_lines)
-        # crude two-qubit-gate count (entangling ops dominate simulator cost)
-        n_2q = len(re.findall(r"\b(cx|cz|cy|ch|swap|iswap|rzz|rxx|ryy|cp|crx|cry|crz|ecr)\b", qasm_text))
+    def __init__(self, artifacts_dir: str | None = None):
+        """Fit the model; ``artifacts_dir`` is accepted for harness compatibility
+        but unused (nothing is loaded from disk)."""
+        from tensor_clock import mlp, tabpfn_model
+        from tensor_clock.data import build_dataset, load_or_build_features
 
-        return {"n_qubits": n_qubits, "n_ops": n_ops, "n_2q": n_2q}
+        X, y, *_ = build_dataset(load_or_build_features())
+        probe = np.zeros((1, X.shape[1]))
+        for kind, module in (("tabpfn", tabpfn_model), ("mlp", mlp)):
+            try:
+                model = module.make_model()
+                model.fit(X, y)
+                model.predict(probe)  # validate it runs (package, weights, deps)
+                self.model, self.kind = model, kind
+                break
+            except Exception as e:
+                print(f"  {kind} unavailable ({type(e).__name__}); trying next")
+        else:
+            raise RuntimeError("no usable model (TabPFN or MLP) could be fit")
+        print(f"using {self.kind} model")
 
-    # ------------------------------------------------------------------ #
-    # 2) MODEL  --  (features, threshold)  ->  predicted seconds          #
-    # ------------------------------------------------------------------ #
-    def predict(self, features: dict, threshold: int) -> float:
-        # BASELINE: a toy formula. Replace with your trained model.
-        n = features["n_qubits"]
-        est = 1e-4 * (2 ** min(n, 30)) * (1 + features["n_2q"] / 1000.0)
-        est *= (threshold / 16.0) ** 0.5           # crude threshold scaling
-        # predict >= cap to signal "this will time out"
-        return float(min(est, CAP_SECONDS))
+    def featurize(self, qasm_text: str) -> dict[str, float]:
+        """Parse one circuit's QASM text into the 32-feature dict."""
+        return text_features(qasm_text.splitlines())
+
+    def predict(self, features: dict[str, float], threshold: int) -> float:
+        """Predict runtime in seconds for one (circuit, threshold).
+
+        Args:
+            features: The dict returned by ``featurize``.
+            threshold: The simulator bond-dimension cap for this run.
+
+        Returns:
+            Predicted wall-clock seconds, capped at the 6-hour timeout.
+        """
+        row = [features[k] for k in FEATURE_NAMES] + [threshold, math.log2(threshold)]
+        pred_log10 = float(self.model.predict(np.array([row]))[0])
+        return float(min(10.0 ** pred_log10, CAP_SECONDS))

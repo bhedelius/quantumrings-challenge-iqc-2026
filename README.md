@@ -2,6 +2,70 @@
 
 Predict how long a quantum-circuit simulation will take, straight from the circuit file, without running it.
 
+---
+
+## Tensor Clock — our solution
+
+Predicting tensor-network simulation runtime from circuit structure. The simulator
+is an approximate matrix-product-state (MPS) engine, so `runtime ~ operations x chi^3`
+where `chi` (bond dimension) is set by the circuit's entanglement and capped by the
+`threshold`. We extract **32 structural features** split across those two factors
+and predict `log10(duration)`.
+
+- **Model:** TabPFN (a pretrained tabular transformer) is the expected model
+  (~0.90 cross-validated); a self-contained scikit-learn MLP (~0.88) is the
+  fallback the harness uses when TabPFN's weights, which we do not redistribute,
+  are unavailable. Model class is the main lever (trees plateau ~0.82).
+- **Key finding:** the problem is data-limited, not feature-limited — more circuits
+  would help, more structural features do not (`docs/learning_curve.md`).
+
+### Repository layout
+
+`tensor_clock/` — the package (dependency-light: numpy, scipy, scikit-learn; no Qiskit):
+
+| File | Purpose |
+|---|---|
+| `qasm_text.py` | streaming OpenQASM 2.0/3.0 parser → the 32-feature dict; defines `FEATURE_NAMES` |
+| `features.py` | shared constants and helpers (Clifford set, entangling power, graph metrics) |
+| `data.py` | feature cache (`build_feature_cache` / `load_or_build_features`) and `build_dataset` |
+| `metrics.py` | the project `score` and `grouped_cv` (circuit-grouped cross-validation) |
+| `tabpfn_model.py` | the TabPFN model (`make_model`) — the expected submission model |
+| `mlp.py` | the scikit-learn MLP ensemble — the self-contained fallback |
+| `exploratory.py` | the wider candidate feature set we pruned from (not used in production) |
+
+`submission-harness/` — the competition harness:
+
+| File | Purpose |
+|---|---|
+| `model.py` | `RuntimeModel`: `featurize` + `predict` (the only file the contest lets you edit) |
+| `run.py`, `score.py` | organizer-provided runner (→ `submission.csv`) and scorer |
+| `requirements.txt` | model dependencies |
+
+`docs/` — write-up and analysis:
+
+| File | Purpose |
+|---|---|
+| `features.md` | the 32 features, grouped and defined |
+| `models.md` | pipeline, models, and the tried/rejected table |
+| `feature_selection.md` | how the candidate set was pruned to 32, and why |
+| `simulator_cost_model.md` | the MPS cost model behind the features |
+| `learning_curve.md` | the data-limited finding |
+| `figures/` | figures (`.pdf`/`.png`) plus the scripts that build them: `model_sweep.py` (CV + learning curves → `sweep_results.json`), `learning_curve.py`, `model_comparison.py` |
+
+**Data** (repo root): `train-circuits/` (compressed QASM), `train-runtime-data.csv` (labels), `feature_cache.csv` (derived features, used to fit the model at startup).
+
+### Run
+
+```bash
+pip install -r submission-harness/requirements.txt   # includes tabpfn (needs a one-time TABPFN_TOKEN)
+cd submission-harness && python run.py --team "Tensor Clock" --circuits ../train-circuits
+```
+The model fits at startup from `feature_cache.csv`; rebuild that cache from the raw
+circuits with `python -m tensor_clock.data` (or delete it and it is rebuilt). To
+reproduce the analysis figures: `python docs/figures/model_sweep.py` then
+`python docs/figures/learning_curve.py` and `python docs/figures/model_comparison.py`.
+
+---
 
 ## Contents
 
